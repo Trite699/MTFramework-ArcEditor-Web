@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MT Framework ARC Editor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg-primary:#fff;--bg-secondary:#f5f5f5;--bg-success:#e6f9ee;--bg-danger:#fdecea;--bg-warn:#fff8e1;
+  --text-primary:#111;--text-secondary:#666;--text-tertiary:#aaa;
+  --text-success:#1a7a3f;--text-danger:#b71c1c;--text-warn:#7a5800;
+  --border-t:rgba(0,0,0,0.12);--border-s:rgba(0,0,0,0.2);--border-p:rgba(0,0,0,0.35);
+  --r-md:8px;--r-lg:12px;--accent:#3a5bdc;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg-primary:#1e1e1e;--bg-secondary:#2a2a2a;--bg-success:#0d3320;--bg-danger:#3b1010;--bg-warn:#2a2000;
+    --text-primary:#f0f0f0;--text-secondary:#aaa;--text-tertiary:#666;
+    --text-success:#4caf82;--text-danger:#f08080;--text-warn:#e6c040;
+    --border-t:rgba(255,255,255,0.1);--border-s:rgba(255,255,255,0.2);--border-p:rgba(255,255,255,0.35);
+    --accent:#7d9bff;
+  }
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:var(--text-primary);background:var(--bg-secondary);min-height:100vh;}
+.wrap{max-width:820px;margin:0 auto;padding:2rem 1rem 4rem;}
+h1{font-size:22px;font-weight:500;margin-bottom:4px;}
+.sub{font-size:13px;color:var(--text-secondary);margin-bottom:20px;}
+.sub a{color:var(--accent);}
+
+.card{background:var(--bg-primary);border:0.5px solid var(--border-t);border-radius:var(--r-lg);padding:1rem 1.25rem;margin-bottom:12px;}
+.card-title{font-size:11px;font-weight:500;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+.card-title-right{font-size:11px;font-weight:400;color:var(--text-tertiary);text-transform:none;letter-spacing:0;flex-shrink:0;}
+
+.drop{display:flex;flex-direction:column;align-items:center;gap:6px;border:1.5px dashed var(--border-s);border-radius:var(--r-md);padding:1.25rem 1rem;text-align:center;cursor:pointer;transition:border-color .15s;position:relative;}
+.drop:hover,.drop.dragover{border-color:var(--border-p);}
+.drop input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;}
+.drop-icon{width:30px;height:30px;border-radius:50%;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;}
+.drop-icon svg{width:14px;height:14px;stroke:var(--text-secondary);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+.drop-label{font-size:13px;color:var(--text-secondary);}
+.drop-hint{font-size:11px;color:var(--text-tertiary);}
+
+.meta-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;}
+.metric{background:var(--bg-secondary);border-radius:var(--r-md);padding:8px 10px;}
+.metric-label{font-size:11px;color:var(--text-secondary);margin-bottom:2px;}
+.metric-val{font-size:13px;font-weight:500;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+.field{display:flex;flex-direction:column;gap:5px;}
+.field label{font-size:12px;color:var(--text-secondary);font-weight:500;}
+.field select,.field input{font-family:inherit;font-size:13px;padding:7px 10px;border-radius:var(--r-md);border:0.5px solid var(--border-s);background:var(--bg-secondary);color:var(--text-primary);width:100%;}
+.field select:focus,.field input:focus{outline:none;border-color:var(--border-p);}
+
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+.btn{font-family:inherit;font-size:13px;font-weight:500;padding:7px 16px;border-radius:var(--r-md);border:0.5px solid var(--border-s);background:transparent;color:var(--text-primary);cursor:pointer;transition:background .12s;white-space:nowrap;position:relative;}
+.btn:hover:not(:disabled){background:var(--bg-secondary);}
+.btn:active:not(:disabled){transform:scale(0.98);}
+.btn:disabled{opacity:.35;cursor:default;}
+.btn-primary{background:var(--text-primary);color:var(--bg-primary);border-color:transparent;}
+.btn-primary:hover:not(:disabled){opacity:.88;background:var(--text-primary);}
+.btn-sm{font-size:11px;padding:4px 9px;border-radius:6px;}
+.btn input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;}
+
+.status{font-size:13px;padding:7px 11px;border-radius:var(--r-md);margin-top:10px;background:var(--bg-secondary);color:var(--text-secondary);display:flex;align-items:flex-start;gap:6px;}
+.status.ok{background:var(--bg-success);color:var(--text-success);}
+.status.err{background:var(--bg-danger);color:var(--text-danger);}
+.status.warn{background:var(--bg-warn);color:var(--text-warn);}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0;margin-top:4px;}
+
+.mt{margin-top:10px;}
+.mt8{margin-top:8px;}
+
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;}
+.search-bar{display:flex;gap:6px;flex:1;min-width:180px;}
+.search-bar input{font-family:inherit;font-size:12px;padding:6px 10px;border-radius:var(--r-md);border:0.5px solid var(--border-s);background:var(--bg-secondary);color:var(--text-primary);flex:1;}
+.search-bar input:focus{outline:none;border-color:var(--border-p);}
+
+.dest-row{display:flex;gap:6px;align-items:center;margin-bottom:10px;background:var(--bg-secondary);border-radius:var(--r-md);padding:6px 8px;}
+.dest-row label{font-size:11px;color:var(--text-secondary);white-space:nowrap;}
+.dest-row input{font-family:monospace;font-size:12px;padding:5px 8px;border-radius:6px;border:0.5px solid var(--border-s);background:var(--bg-primary);color:var(--text-primary);flex:1;}
+
+.tree-panel{border:0.5px solid var(--border-t);border-radius:var(--r-md);background:var(--bg-secondary);max-height:420px;overflow-y:auto;padding:6px;}
+.empty-note{font-size:13px;color:var(--text-tertiary);text-align:center;padding:2rem 0;}
+.node{}
+.folder-row,.file-row{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;cursor:default;}
+.folder-row{cursor:pointer;font-weight:500;}
+.folder-row:hover,.file-row:hover{background:var(--bg-primary);}
+.folder-row.selected{background:var(--bg-primary);outline:1px solid var(--border-p);}
+.caret{font-size:10px;color:var(--text-tertiary);transition:transform .15s;width:10px;flex-shrink:0;}
+.caret.open{transform:rotate(90deg);}
+.icon{font-size:12px;flex-shrink:0;}
+.name{font-size:12.5px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+.file-meta{font-size:10.5px;color:var(--text-tertiary);flex-shrink:0;font-family:monospace;}
+.file-actions{display:flex;gap:4px;flex-shrink:0;}
+.children{display:none;padding-left:18px;border-left:1px solid var(--border-t);margin-left:9px;}
+.children.open{display:block;}
+.icon-btn{background:none;border:none;cursor:pointer;color:var(--text-tertiary);font-size:12px;padding:2px 5px;border-radius:5px;}
+.icon-btn:hover{background:var(--bg-secondary);color:var(--text-primary);}
+.icon-btn.danger:hover{color:var(--text-danger);background:var(--bg-danger);}
+.badge{font-size:9.5px;padding:1px 5px;border-radius:4px;background:var(--bg-secondary);color:var(--text-secondary);font-weight:500;flex-shrink:0;}
+.badge.new{background:var(--bg-success);color:var(--text-success);}
+.badge.comp{background:var(--bg-warn);color:var(--text-warn);}
+
+.stats-line{font-size:11px;color:var(--text-tertiary);margin-bottom:8px;}
+.hint{font-size:11.5px;color:var(--text-tertiary);margin-top:8px;line-height:1.5;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>MT Framework ARC Editor</h1>
+  <p class="sub">Browse, extract, and rebuild Capcom MT Framework <code>.arc</code> archives,like <a href="https://github.com/FanTranslatorsInternational/Kuriimu2" target="_blank" rel="noopener">Kuriimu2</a>.</p>
+
+  <!-- LOAD -->
+  <div class="card">
+    <div class="card-title">
+      Load archive
+      <span class="card-title-right" id="ver-badge"></span>
+    </div>
+    <label class="drop" id="drop-zone">
+      <div class="drop-icon"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+      <span class="drop-label" id="drop-text">Click or drop a .arc file</span>
+      <span class="drop-hint">Plain MT Framework ARC — PC / PS3 / X360 / Switch. Encrypted ARCC is not supported.</span>
+      <input type="file" id="file-input" accept=".arc,*">
+    </label>
+    <div class="meta-grid" id="meta-grid" style="display:none"></div>
+    <div class="status" id="load-status" style="display:none"><span class="dot"></span><span id="load-status-text"></span></div>
+    <div class="btn-row mt" id="new-arc-row">
+      <button class="btn" onclick="startNewArchive()">Or start a new empty archive</button>
+    </div>
+  </div>
+
+  <!-- CONTENTS -->
+  <div class="card" id="contents-card" style="display:none">
+    <div class="card-title">
+      Contents
+      <span class="card-title-right" id="contents-count"></span>
+    </div>
+
+    <div class="dest-row">
+      <label>Target folder</label>
+      <input type="text" id="dest-folder" placeholder="e.g. chr/eng  (leave blank for root)">
+    </div>
+
+    <div class="toolbar">
+      <div class="search-bar"><input type="text" id="tree-search" placeholder="Filter files…" oninput="renderTree()"></div>
+      <button class="btn btn-sm" onclick="addFolder()">+ Folder</button>
+      <button class="btn btn-sm" style="position:relative">+ Files
+        <input type="file" id="add-files-input" multiple>
+      </button>
+      <button class="btn btn-sm" onclick="expandAll(true)">Expand all</button>
+      <button class="btn btn-sm" onclick="expandAll(false)">Collapse all</button>
+    </div>
+
+    <div class="stats-line" id="tree-stats"></div>
+    <div class="tree-panel" id="tree-panel"><div class="empty-note">No files.</div></div>
+
+    <div class="btn-row mt">
+      <button class="btn" id="btn-extract-all" onclick="downloadAllZip()" disabled>Download all as .zip</button>
+    </div>
+  </div>
+
+  <!-- SAVE -->
+  <div class="card" id="save-card" style="display:none">
+    <div class="card-title">Save archive</div>
+    <div class="field">
+      <label>Output filename</label>
+      <input type="text" id="out-name" placeholder="archive.arc">
+    </div>
+    <div class="btn-row mt">
+      <button class="btn btn-primary" onclick="rebuildAndDownload()">Rebuild &amp; download .arc</button>
+    </div>
+    <div class="status" id="save-status" style="display:none"><span class="dot"></span><span id="save-status-text"></span></div>
+    <p class="hint">Rebuilding keeps the original (often compressed) bytes of untouched files as-is, and stores newly added files uncompressed. Empty folders exist only in this editor and are not written to the .arc, since the format has no folder entries.</p>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════
+// CRC32 (standard, poly 0xEDB88320) — used for zip CRCs and
+// for computing Capcom's "type name" extension hashes.
+// ══════════════════════════════════════════════════════════
+const CRC32T = (()=>{const t=new Uint32Array(256);for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[i]=c;}return t;})();
+function crc32Bytes(bytes){let c=0xFFFFFFFF;for(let i=0;i<bytes.length;i++)c=CRC32T[(c^bytes[i])&0xFF]^(c>>>8);return(c^0xFFFFFFFF)>>>0;}
+function crc32Str(s){return crc32Bytes(new TextEncoder().encode(s));}
+function capcomHash(name){return(~crc32Str(name))>>>0;}
+
+// ══════════════════════════════════════════════════════════
+// Extension hash table (ExtensionHash -> file extension)
+// Ported from Kuriimu2 plugin_mt_framework/Archives/MtArcSupport.cs
+// ══════════════════════════════════════════════════════════
+const EXT_MAP = {};
+function addH(name,ext){ EXT_MAP[capcomHash(name)] = ext; }
+addH("rAIFSM",".xfsa"); addH("rCameraList",".lcm"); addH("rCharacter",".xfsc");
+addH("rCollision",".sbc"); addH("rEffectAnim",".ean"); addH("rEffectList",".efl");
+addH("rGUI",".gui"); addH("rGUIFont",".gfd"); addH("rGUIIconInfo",".gii");
+addH("rGUIMessage",".gmd"); addH("rHit2D",".xfsh"); addH("rLayoutParameter",".xfsl");
+addH("rMaterial",".mrl"); addH("rModel",".mod"); addH("rMotionList",".lmt");
+addH("rPropParam",".prp"); addH("rScheduler",".sdl"); addH("rSoundBank",".sbkr");
+addH("rSoundRequest",".srqr"); addH("rSoundSourceADPCM",".mca"); addH("rTexture",".tex");
+addH("rBodyEdit",".bed"); addH("rEditConvert",".edc"); addH("rEffect2D",".e2d");
+addH("rFaceEdit",".fed"); addH("rFacialAnimation",".fca");
+const RAW_EXT_MAP={
+0x22FA09:".hpe",0x26E7FF:".ccl",0x86B80F:".plexp",0xFDA99B:".ntr",0x2358E1A:".spkg",
+0x2373BA7:".spn",0x2833703:".efs",0x315E81F:".sds",0x437BCF2:".grw",0x4B4BE62:".tmd",
+0x525AEE2:".wfp",0x5A36D08:".qif",0x69A1911:".olp",0x737E28B:".rst",0x7437CCE:".base",
+0x79B5F3E:".pci",0x7F768AF:".gii",0x89BEF2C:".sap",0xA74682F:".rnp",0xC4FCAE4:".PlDefendParam",
+0xD06BE6B:".tmn",0xECD7DF4:".scs",0x11C35522:".gr2",0x12191BA1:".epv",0x12688D38:".pjp",
+0x12C3BFA7:".cpl",0x133917BA:".mss",0x14428EAE:".gce",0x15302EF4:".lot",0x157388D3:".itl",
+0x15773620:".nmr",0x167DBBFF:".stq",0x1823137D:".mlm",0x19054795:".nnl",0x199C56C0:".ocl",
+0x1B520B68:".zon",0x1BCC4966:".srq",0x1C2B501F:".atr",0x1EB3767C:".spr",0x2052D67E:".sn2",
+0x215896C2:".statusparam",0x2282360D:".jex",0x22948394:".gui",0x22B2A2A2:".PlNeckPos",
+0x232E228C:".rev",0x241F5DEB:".tex",0x242BB29A:".gmd",0x257D2F7C:".swm",0x2749C8A8:".mrl",
+0x271D08FE:".ssq",0x272B80EA:".prp",0x2A37242D:".gpl",0x2A4F96A8:".rbd",0x2B0670A5:".map",
+0x2B303957:".gop",0x2B40AE8F:".equ",0x2CE309AB:".joblvl",0x2D12E086:".srd",0x2D462600:".gfd",
+0x30FC745F:".smx",0x312607A4:".bll",0x31B81AA5:".qr",0x325AACA5:".shl",0x32E2B13B:".edp",
+0x33B21191:".esp",0x354284E7:".lvl",0x358012E8:".vib",0x39A0D1D6:".sms",0x39C52040:".lcm",
+0x3A947AC1:".cql",0x3B350990:".qsp",0x3BBA4E33:".qct",0x3D97AD80:".amr",0x3E356F93:".stc",
+0x3E363245:".chn",0x3FB52996:".imx",0x4046F1E1:".ajp",0x437662FC:".oml",0x4509FA80:".itemlv",
+0x456B6180:".cnsshake",0x472022DF:".AIPlActParam",0x48538FFD:".ist",0x48C0AF2D:".msl",
+0x49B5A885:".ssc",0x4B704CC0:".mia",0x4C0DB839:".sdl",0x4CA26828:".bmse",0x4E397417:".ean",
+0x4E44FB6D:".fpe",0x4EF19843:".nav",0x4FB35A95:".aor",0x50F3D713:".skl",0x5175C242:".geo2",
+0x51FC779F:".sbc",0x522F7A3D:".fcp",0x52DBDCD6:".rdd",0x535D969F:".ctc",0x5802B3FF:".ahc",
+0x58A15856:".mod",0x59D80140:".ablparam",0x5A7FEA62:".ik",0x5B334013:".bap",0x5EA7A3E9:".sky",
+0x5F36B659:".way",0x5F88B715:".epd",0x60BB6A09:".hed",0x6186627D:".wep",0x619D23DF:".shp",
+0x628DFB41:".gr2s",0x63747AA7:".rpi",0x63B524A7:".ltg",0x64387FF1:".qlv",0x65B275E5:".sce",
+0x66B45610:".fsm",0x671F21DA:".stp",0x69A5C538:".dwm",0x6D0115ED:".prt",0x6D5AE854:".efl",
+0x6DB9FA5F:".cmc",0x6EE70EFF:".pcf",0x6F302481:".plw",0x6FE1EA15:".spl",0x72821C38:".stm",
+0x73850D05:".arc",0x754B82B4:".ahs",0x76820D81:".lmt",0x76DE35F6:".rpn",0x7808EA10:".rtex",
+0x7817FFA5:".fbik_human",0x7AA81CAB:".eap",0x7BEC319A:".sps",0x7DA64808:".qmk",0x7E1C8D43:".pcs",
+0x7E33A16C:".spc",0x7E4152FF:".stg",0x17A550D:".lom",0x253F147:".hit",0x39D71F2:".rvt",
+0xDADAB62:".oba",0x10C460E6:".msg",0x176C3F95:".los",0x19A59A91:".lnk",0x1BA81D3C:".nck",
+0x1ED12F1B:".glp",0x1EFB1B67:".adh",0x2447D742:".idm",0x266E8A91:".lku",0x2C4666D1:".smh",
+0x2DC54131:".cdf",0x30ED4060:".pth",0x36E29465:".hkx",0x38F66FC3:".seg",0x430B4FF4:".ptl",
+0x46810940:".egv",0x4D894D5D:".cmi",0x4E2FEF36:".mtg",0x4F16B7AB:".hri",0x50F9DB3E:".bfx",
+0x5204D557:".shp",0x538120DE:".eng",0x557ECC08:".aef",0x585831AA:".pos",0x5898749C:".bgm",
+0x60524FBB:".shw",0x60DD1B16:".lsp",0x758B2EB7:".cef",0x7D1530C2:".sngw",0x46FB08BA:".bmt",
+0x285A13D9:".vzo",0x4323D83A:".stex",0x6A5CDD23:".occ",0x62440501:".lmd",0x62A68441:".thk",
+0x4D3C70A1:".bth",0x244CC507:".itr",0x6A9197ED:".sss",0x3B764DD4:".sstr",0x3516C3D2:".lfd",
+0x0CF7FB37:".msf",0x3D2E1661:".ein",0x3B5A0DA5:".idx",0x354E1E08:".ard",0x5B9071CF:".col",
+0x342366F0:".atk",0x76042FD2:".eco",0x052CCE4E:".mef",0x55E21D03:".emp",0x51BE0EC:".rut",
+0x70078B5:".rmt",0x949A1DA:".adl",0x9C48A11:".unk",0xA736313:".mdl",0x108F442E:".mdl",
+0x130124FA:".rmh",0x18FF29AB:".cut",0x1BE1DBEB:".dom",0x24339E8C:".evl",0x28D65BFA:".pos",
+0x2ADFA358:".pvl",0x348C831D:".evc",0x375F06DA:".evt",0x40171000:".dat",0x42940D09:".fmt",
+0x4356673E:".man",0x46C78353:".mes",0x5DF3D947:".mry",0x5FF4BE71:".ene",0x6505B384:".ddsp",
+0x681835FC:".itm",0x6A76E771:".mes",0x6B0369B1:".atr",0x6B571E45:".lgt",0x6E69693A:".obj",
+0x7050198A:".pmb",0x74AFE18C:".mdl",0x7618CC9A:".mtn",0x7D9D148B:".eft",0x7DB518E8:".mdl",
+0x7F68C6AF:".mpac"
+};
+Object.entries(RAW_EXT_MAP).forEach(([k,v])=>{EXT_MAP[Number(k)>>>0]=v;});
+const EXT_TO_HASH={};
+Object.entries(EXT_MAP).forEach(([hash,ext])=>{ if(!(ext in EXT_TO_HASH)) EXT_TO_HASH[ext]=Number(hash)>>>0; });
+
+function resolveExt(hash){ hash=hash>>>0; return EXT_MAP[hash] || ('.'+hash.toString(16).toUpperCase().padStart(8,'0')); }
+
+// ══════════════════════════════════════════════════════════
+// ARC binary structures
+// header: magic(4) version(u16) entryCount(u16)
+// MtEntry:        name(0x40) extHash(u32) compSize(i32) decompSize(i32) offset(i32)      = 0x50
+// MtEntryExtName: name(0x80) extHash(u32) compSize(i32) decompSize(i32) offset(i32)      = 0x90
+// MtEntrySwitch:  name(0x40) extHash(u32) compSize(i32) decompSize(i32) unk1(i32) offset(i32) = 0x54
+// ══════════════════════════════════════════════════════════
+function determineFileOffset(little, version, isSwitch, fileCount, entryOffset, hasExt){
+  if(isSwitch) return (entryOffset + 84*fileCount + 0x7FFF) & ~0x7FFF;
+  const entrySize = hasExt?144:80;
+  if(version===4||version===7||version===8||version===16){
+    if(little) return (entryOffset+entrySize*fileCount+0x7FFF) & ~0x7FFF;
+  } else if(version===17){
+    if(little) return (entryOffset+entrySize*fileCount+0xFF) & ~0xFF;
+  }
+  return entryOffset+entrySize*fileCount;
+}
+function getRealDecompSize(v,isBE,isSwitch){
+  v=v>>>0;
+  if(isSwitch) return v;
+  if(isBE) return v>>>3;
+  return v & 0x00FFFFFF;
+}
+function setDecompSize(oldVal,size,isBE,isSwitch){
+  oldVal=(oldVal||0)>>>0;
+  if(isSwitch) return size>>>0;
+  if(isBE) return ((oldVal & 0x7) | ((size<<3)>>>0))>>>0;
+  return ((oldVal & ~0x00FFFFFF) | (size & 0x00FFFFFF))>>>0;
+}
+
+function detectPlatform(u8){
+  if(u8.length<8) throw new Error('File is too small to be an ARC (need at least 8 bytes).');
+  if(u8[0]===0x41&&u8[1]===0x52&&u8[2]===0x43&&u8[3]===0x43) return 'arcc';
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);
+  const verLE=dv.getUint16(4,true);
+  if(verLE===9) return 'switch';
+  if(u8[0]===0x00&&u8[1]===0x43&&u8[2]===0x52&&u8[3]===0x41) return 'be';
+  if(u8[0]===0x41&&u8[1]===0x52&&u8[2]===0x43&&u8[3]===0x00) return 'le';
+  throw new Error('Unrecognized magic bytes — this does not look like a plain MT Framework ARC.');
+}
+
+function readCName(u8,start,len){
+  const slice=u8.slice(start,start+len);
+  let nul=slice.indexOf(0); if(nul<0) nul=slice.length;
+  for(let k=nul;k<slice.length;k++) if(slice[k]!==0) return null; // padding must be all zero
+  for(let k=0;k<nul;k++){ const c=slice[k]; if(c<0x20 && c!==0x09) return null; }
+  return new TextDecoder('utf-8',{fatal:false}).decode(slice.slice(0,nul));
+}
+
+function tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,hasExt){
+  const entrySize = isSwitch?84:(hasExt?144:80);
+  const nameLen = isSwitch?64:(hasExt?128:64);
+  const headerSize=8;
+  if(headerSize+entrySize*entryCount>u8.length) return null;
+  const entries=[]; let p=headerSize;
+  for(let i=0;i<entryCount;i++){
+    const name=readCName(u8,p,nameLen);
+    if(name===null) return null;
+    let off=p+nameLen;
+    const extensionHash=dv.getUint32(off,little); off+=4;
+    const compSize=dv.getInt32(off,little); off+=4;
+    const decompSizeRaw=dv.getInt32(off,little); off+=4;
+    let unk1=0;
+    if(isSwitch){ unk1=dv.getInt32(off,little); off+=4; }
+    const offset=dv.getInt32(off,little); off+=4;
+    entries.push({name,extensionHash,compSize,decompSizeRaw,offset,unk1,isNew:false});
+    p+=entrySize;
+  }
+  const dataStart=determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
+  // sanity check: entries' data ranges should fit in the file and start at/after dataStart
+  for(const e of entries){
+    if(e.compSize<0 || e.offset<0) return null;
+    if(e.offset+e.compSize>u8.length) return null;
+    if(entryCount>0 && e.offset<8) return null;
+  }
+  return {entries,entrySize,nameLen,dataStart};
+}
+
+function parseArc(buf){
+  const u8=new Uint8Array(buf);
+  const platform=detectPlatform(u8);
+  if(platform==='arcc') throw new Error('This is an encrypted ARCC archive (Capcom mobile Blowfish encryption). Decryption is not implemented in this tool.');
+  const isBE=platform==='be', isSwitch=platform==='switch', little=!isBE;
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);
+  const version=dv.getUint16(4,little);
+  const entryCount=dv.getUint16(6,little);
+
+  let hasExt=false, parsed=null;
+  if(!isSwitch){
+    parsed=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,false);
+    if(!parsed){
+      const alt=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,true);
+      if(alt){ parsed=alt; hasExt=true; }
+    }
+  } else {
+    parsed=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,false);
+  }
+  if(!parsed) throw new Error('Could not parse the entry table — file may be corrupt, compressed at the container level, or use an unsupported variant.');
+
+  return {
+    platform, isBE, isSwitch, version, entryCount, hasExt,
+    rawBuffer:u8, entries:parsed.entries, dataStart:parsed.dataStart
+  };
+}
+
+async function extractEntryData(entry){
+  if(entry.isNew) return entry.data;
+  const raw=loadedArc.rawBuffer.slice(entry.offset, entry.offset+entry.compSize);
+  const realSize=getRealDecompSize(entry.decompSizeRaw, loadedArc.isBE, loadedArc.isSwitch);
+  if(realSize===entry.compSize || typeof pako==='undefined') return raw;
+  try{ return pako.inflate(raw); }
+  catch(e1){
+    try{ return pako.inflateRaw(raw); }
+    catch(e2){ throw new Error('Failed to decompress "'+entry.name+'": '+e1.message); }
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// Minimal ZIP writer (store method) for bulk export
+// ══════════════════════════════════════════════════════════
+function buildZip(files){
+  const enc=new TextEncoder(); const localParts=[]; const central=[]; let offset=0;
+  for(const f of files){
+    const nameBytes=enc.encode(f.name);
+    const crc=crc32Bytes(f.data); const size=f.data.length;
+    const lh=new Uint8Array(30+nameBytes.length); const dv=new DataView(lh.buffer);
+    dv.setUint32(0,0x04034b50,true); dv.setUint16(4,20,true); dv.setUint16(6,0,true);
+    dv.setUint16(8,0,true); dv.setUint16(10,0,true); dv.setUint16(12,0,true);
+    dv.setUint32(14,crc,true); dv.setUint32(18,size,true); dv.setUint32(22,size,true);
+    dv.setUint16(26,nameBytes.length,true); dv.setUint16(28,0,true);
+    lh.set(nameBytes,30);
+    localParts.push(lh,f.data);
+    central.push({nameBytes,crc,size,offset});
+    offset+=lh.length+f.data.length;
+  }
+  const centralParts=[]; let centralSize=0;
+  for(const c of central){
+    const ch=new Uint8Array(46+c.nameBytes.length); const dv=new DataView(ch.buffer);
+    dv.setUint32(0,0x02014b50,true); dv.setUint16(4,20,true); dv.setUint16(6,20,true);
+    dv.setUint16(8,0,true); dv.setUint16(10,0,true); dv.setUint16(12,0,true); dv.setUint16(14,0,true);
+    dv.setUint32(16,c.crc,true); dv.setUint32(20,c.size,true); dv.setUint32(24,c.size,true);
+    dv.setUint16(28,c.nameBytes.length,true); dv.setUint16(30,0,true); dv.setUint16(32,0,true);
+    dv.setUint16(34,0,true); dv.setUint16(36,0,true); dv.setUint32(38,0,true);
+    dv.setUint32(42,c.offset,true);
+    ch.set(c.nameBytes,46);
+    centralParts.push(ch); centralSize+=ch.length;
+  }
+  const end=new Uint8Array(22); const dv=new DataView(end.buffer);
+  dv.setUint32(0,0x06054b50,true); dv.setUint16(8,central.length,true); dv.setUint16(10,central.length,true);
+  dv.setUint32(12,centralSize,true); dv.setUint32(16,offset,true);
+  const total=offset+centralSize+22; const out=new Uint8Array(total); let p=0;
+  for(const part of localParts){out.set(part,p);p+=part.length;}
+  for(const part of centralParts){out.set(part,p);p+=part.length;}
+  out.set(end,p);
+  return out;
+}
+
+// ══════════════════════════════════════════════════════════
+// UI STATE
+// ══════════════════════════════════════════════════════════
+let loadedArc=null;      // {platform,isBE,isSwitch,version,hasExt,rawBuffer,dataStart}
+let entries=[];          // flat list of {name, extensionHash, compSize, decompSizeRaw, offset, unk1, isNew, data, ext}
+let virtualFolders=new Set();
+let openFolders=new Set();
+let sourceFileName='archive.arc';
+
+function formatBytes(b){ if(b<1024) return b+' B'; if(b<1048576) return (b/1024).toFixed(1)+' KB'; return (b/1048576).toFixed(2)+' MB'; }
+function setStatus(id,msg,cls){ const el=document.getElementById(id); el.className='status '+(cls||''); el.style.display='flex'; el.querySelector('span:last-child').textContent=msg; }
+function setMeta(pairs){ const g=document.getElementById('meta-grid'); g.innerHTML=pairs.map(([l,v])=>`<div class="metric"><div class="metric-label">${l}</div><div class="metric-val" title="${v}">${v}</div></div>`).join(''); g.style.display='grid'; }
+function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function dlBlob(blob,name){ const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),4000); }
+function readArrayBuffer(f){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsArrayBuffer(f); }); }
+function baseName(n){ return n.replace(/\.[^.]+$/,''); }
+function displayName(e){ return e.name + (e.ext!==undefined?e.ext:resolveExt(e.extensionHash)); }
+
+// ── Load ─────────────────────────────────────────────
+const dropZone=document.getElementById('drop-zone'), fileInput=document.getElementById('file-input');
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover');});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');const f=e.dataTransfer.files[0];if(f)loadFile(f);});
+fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f)loadFile(f);});
+
+async function loadFile(f){
+  sourceFileName=f.name;
+  document.getElementById('drop-text').textContent=f.name;
+  document.getElementById('ver-badge').textContent='';
+  document.getElementById('meta-grid').style.display='none';
+  try{
+    const buf=await readArrayBuffer(f);
+    const arc=parseArc(buf);
+    loadedArc=arc;
+    entries=arc.entries.map(e=>({...e, ext:resolveExt(e.extensionHash)}));
+    virtualFolders=new Set(); openFolders=new Set();
+    const platformLabel={le:'PC / little-endian',be:'PS3 / Xbox 360 / big-endian',switch:'Nintendo Switch'}[arc.platform];
+    document.getElementById('ver-badge').textContent=platformLabel;
+    setMeta([
+      ['Platform',platformLabel],
+      ['Version','0x'+arc.version.toString(16)],
+      ['Entries',String(arc.entryCount)],
+      ['Name field','extended'in arc?'':(arc.hasExt?'extended (0x80)':'standard (0x40)')],
+      ['Data starts at','0x'+arc.dataStart.toString(16)],
+      ['File size',formatBytes(f.size)]
+    ]);
+    setStatus('load-status',`Loaded ${f.name} · ${arc.entryCount} entries · ${formatBytes(f.size)}`,'ok');
+    document.getElementById('out-name').value=f.name;
+    showEditor();
+  }catch(err){
+    loadedArc=null; entries=[];
+    setStatus('load-status','Error: '+err.message,'err');
+    document.getElementById('contents-card').style.display='none';
+    document.getElementById('save-card').style.display='none';
+  }
+}
+
+function startNewArchive(){
+  loadedArc={platform:'le',isBE:false,isSwitch:false,version:7,hasExt:false,rawBuffer:new Uint8Array(0),dataStart:8};
+  entries=[]; virtualFolders=new Set(); openFolders=new Set();
+  sourceFileName='archive.arc';
+  document.getElementById('drop-text').textContent='New empty archive';
+  document.getElementById('ver-badge').textContent='PC / little-endian (new)';
+  document.getElementById('meta-grid').style.display='none';
+  setStatus('load-status','Started a new empty archive (version 7, little-endian). Add files below.','ok');
+  document.getElementById('out-name').value='archive.arc';
+  showEditor();
+}
+
+function showEditor(){
+  document.getElementById('contents-card').style.display='';
+  document.getElementById('save-card').style.display='';
+  renderTree();
+}
+
+// ── Tree building ────────────────────────────────────
+function buildTree(filterText){
+  const root={type:'folder',name:'',children:new Map(),path:''};
+  function ensureFolder(path){
+    if(path==='') return root;
+    const parts=path.split(/[\\/]/).filter(Boolean);
+    let node=root, cur='';
+    for(const part of parts){
+      cur=cur?cur+'/'+part:part;
+      if(!node.children.has(part)) node.children.set(part,{type:'folder',name:part,children:new Map(),path:cur});
+      node=node.children.get(part);
+    }
+    return node;
+  }
+  for(const folder of virtualFolders) ensureFolder(folder);
+  const q=(filterText||'').toLowerCase();
+  entries.forEach((e,idx)=>{
+    const full=displayName(e);
+    if(q && !full.toLowerCase().includes(q)) return;
+    const parts=full.split(/[\\/]/).filter(Boolean);
+    const fname=parts.pop();
+    const folderPath=parts.join('/');
+    const parent=ensureFolder(folderPath);
+    parent.children.set('\0file:'+idx+':'+fname,{type:'file',name:fname,idx,path:(folderPath?folderPath+'/':'')+fname});
+  });
+  return root;
+}
+
+function sortedChildren(node){
+  return[...node.children.values()].sort((a,b)=>{
+    if(a.type!==b.type) return a.type==='folder'?-1:1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function renderNode(node,depth){
+  let html='';
+  for(const child of sortedChildren(node)){
+    if(child.type==='folder'){
+      const open=openFolders.has(child.path);
+      html+=`<div class="node">
+        <div class="folder-row" onclick="toggleFolder('${escapeHtml(child.path).replace(/'/g,"\\'")}',this)">
+          <span class="caret ${open?'open':''}">&#9658;</span>
+          <span class="icon">📁</span>
+          <span class="name">${escapeHtml(child.name)}</span>
+        </div>
+        <div class="children ${open?'open':''}">${renderNode(child,depth+1)}</div>
+      </div>`;
+    } else {
+      const e=entries[child.idx];
+      const realSize=loadedArc?getRealDecompSize(e.decompSizeRaw,loadedArc.isBE,loadedArc.isSwitch):e.compSize;
+      const isCompressed=!e.isNew && realSize!==e.compSize;
+      html+=`<div class="file-row">
+        <span class="icon">📄</span>
+        <span class="name" title="${escapeHtml(child.path)}">${escapeHtml(child.name)}</span>
+        ${e.isNew?'<span class="badge new">new</span>':''}
+        ${isCompressed?'<span class="badge comp">compressed</span>':''}
+        <span class="file-meta">${formatBytes(e.isNew?e.data.length:e.compSize)}</span>
+        <span class="file-actions">
+          <button class="icon-btn" title="Download" onclick="downloadEntry(${child.idx})">&#8681;</button>
+          <button class="icon-btn danger" title="Remove" onclick="removeEntry(${child.idx})">&#10005;</button>
+        </span>
+      </div>`;
+    }
+  }
+  return html || (depth===0?'':'');
+}
+
+let folderClickTarget='';
+function toggleFolder(path,el){
+  if(openFolders.has(path)) openFolders.delete(path); else openFolders.add(path);
+  folderClickTarget=path;
+  document.getElementById('dest-folder').value=path;
+  renderTree();
+}
+function expandAll(open){
+  if(open){
+    function collect(node,acc){ for(const c of node.children.values()) if(c.type==='folder'){acc.add(c.path);collect(c,acc);} }
+    const all=new Set(); collect(buildTree(''),all); openFolders=all;
+  } else openFolders=new Set();
+  renderTree();
+}
+
+function renderTree(){
+  const filter=document.getElementById('tree-search').value;
+  const tree=buildTree(filter);
+  const panel=document.getElementById('tree-panel');
+  const html=renderNode(tree,0);
+  panel.innerHTML=html || '<div class="empty-note">No files match.</div>';
+  document.getElementById('contents-count').textContent=entries.length+' file'+(entries.length===1?'':'s');
+  document.getElementById('tree-stats').textContent=filter?`Filtered view`:`${entries.length} files, ${virtualFolders.size} empty folder(s)`;
+  document.getElementById('btn-extract-all').disabled=entries.length===0;
+}
+
+// ── Add files / folders ─────────────────────────────
+document.getElementById('add-files-input').addEventListener('change', async e=>{
+  const files=[...e.target.files]; if(!files.length) return;
+  const dest=document.getElementById('dest-folder').value.trim().replace(/^\/+|\/+$/g,'');
+  for(const f of files){
+    const buf=await readArrayBuffer(f);
+    const data=new Uint8Array(buf);
+    const dot=f.name.lastIndexOf('.');
+    const ext=dot>=0?f.name.slice(dot).toLowerCase():'';
+    const base=dot>=0?f.name.slice(0,dot):f.name;
+    let hash=EXT_TO_HASH[ext];
+    if(hash===undefined){
+      const manual=window.prompt(`Unknown extension "${ext}". Enter the extension hash as hex (advanced), or leave blank for 0x00000000:`,'');
+      hash = manual ? (parseInt(manual.replace(/^0x/i,''),16)>>>0) : 0;
+    }
+    const path=dest?dest+'/'+base:base;
+    entries.push({name:path, extensionHash:hash>>>0, ext, compSize:data.length, decompSizeRaw:data.length, offset:0, unk1:0, isNew:true, data});
+  }
+  e.target.value='';
+  renderTree();
+});
+
+function addFolder(){
+  const dest=document.getElementById('dest-folder').value.trim().replace(/^\/+|\/+$/g,'');
+  const name=window.prompt('New folder name:', '');
+  if(!name) return;
+  const path=dest?dest+'/'+name:name;
+  virtualFolders.add(path);
+  openFolders.add(path);
+  document.getElementById('dest-folder').value=path;
+  renderTree();
+}
+
+function removeEntry(idx){
+  entries[idx]=null;
+  entries=entries.filter(Boolean);
+  renderTree();
+}
+
+// ── Extraction / download ───────────────────────────
+async function downloadEntry(idx){
+  const e=entries[idx];
+  try{
+    const data=await extractEntryData(e);
+    const parts=displayName(e).split(/[\\/]/).filter(Boolean);
+    dlBlob(new Blob([data],{type:'application/octet-stream'}), parts[parts.length-1]);
+  }catch(err){
+    alert(err.message);
+  }
+}
+
+async function downloadAllZip(){
+  const btn=document.getElementById('btn-extract-all');
+  btn.disabled=true; const orig=btn.textContent; btn.textContent='Extracting…';
+  try{
+    const files=[];
+    for(const e of entries){
+      const data=await extractEntryData(e);
+      const path=displayName(e).replace(/\\/g,'/').replace(/^\/+/,'');
+      files.push({name:path,data});
+    }
+    const zip=buildZip(files);
+    dlBlob(new Blob([zip],{type:'application/zip'}), baseName(sourceFileName)+'_extracted.zip');
+  }catch(err){
+    alert('Failed to build zip: '+err.message);
+  }finally{
+    btn.disabled=entries.length===0; btn.textContent=orig;
+  }
+}
+
+// ── Rebuild & save ───────────────────────────────────
+function rebuildArc(){
+  if(!loadedArc) throw new Error('No archive loaded.');
+  const isBE=loadedArc.isBE, isSwitch=loadedArc.isSwitch, little=!isBE, version=loadedArc.version;
+  let hasExt=loadedArc.hasExt;
+  const enc=new TextEncoder();
+
+  if(!isSwitch){
+    const maxLen=Math.max(0,...entries.map(e=>enc.encode(e.name).length));
+    if(!hasExt && maxLen>63){
+      if(maxLen>127) throw new Error(`A file path is too long (${maxLen} bytes) even for the extended name format (max 127).`);
+      hasExt=true;
+    }
+  } else {
+    const maxLen=Math.max(0,...entries.map(e=>enc.encode(e.name).length));
+    if(maxLen>63) throw new Error(`A file path is too long (${maxLen} bytes) for the Switch entry format (max 63).`);
+  }
+
+  const nameLimit=isSwitch?64:(hasExt?128:64);
+  const entrySize=isSwitch?84:(hasExt?144:80);
+  const headerSize=8;
+  const entryCount=entries.length;
+  const dataStart=determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
+
+  let cursor=dataStart;
+  const fileBuffers=[];
+  for(const e of entries){
+    let dataBytes, finalDecomp;
+    if(e.isNew){
+      dataBytes=e.data;
+      e.compSize=dataBytes.length;
+      finalDecomp=setDecompSize(0,dataBytes.length,isBE,isSwitch);
+    } else {
+      dataBytes=loadedArc.rawBuffer.slice(e.offset,e.offset+e.compSize);
+      finalDecomp=e.decompSizeRaw;
+    }
+    e._finalOffset=cursor;
+    e._finalDecomp=finalDecomp;
+    fileBuffers.push(dataBytes);
+    cursor+=dataBytes.length;
+  }
+  const total=cursor;
+  const out=new Uint8Array(total);
+  const dv=new DataView(out.buffer);
+
+  if(isBE) out.set([0x00,0x43,0x52,0x41],0); else out.set([0x41,0x52,0x43,0x00],0);
+  dv.setUint16(4,version,little);
+  dv.setUint16(6,entryCount,little);
+
+  let p=headerSize;
+  for(const e of entries){
+    const nameBytes=enc.encode(e.name).slice(0,nameLimit-1);
+    out.set(nameBytes,p);
+    let off=p+nameLimit;
+    dv.setUint32(off,e.extensionHash>>>0,little); off+=4;
+    dv.setInt32(off,e.compSize,little); off+=4;
+    dv.setInt32(off,e._finalDecomp>>>0,little); off+=4;
+    if(isSwitch){ dv.setInt32(off,e.unk1||0,little); off+=4; }
+    dv.setInt32(off,e._finalOffset,little); off+=4;
+    p+=entrySize;
+  }
+  for(let i=0;i<entries.length;i++) out.set(fileBuffers[i], entries[i]._finalOffset);
+  return out;
+}
+
+function rebuildAndDownload(){
+  try{
+    const out=rebuildArc();
+    const name=document.getElementById('out-name').value.trim() || 'archive.arc';
+    dlBlob(new Blob([out],{type:'application/octet-stream'}), name);
+    setStatus('save-status',`Rebuilt · ${entries.length} entries · ${formatBytes(out.length)}`,'ok');
+  }catch(err){
+    setStatus('save-status','Error: '+err.message,'err');
+  }
+}
+</script>
+</body>
+</html>
