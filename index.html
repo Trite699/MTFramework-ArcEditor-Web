@@ -108,7 +108,7 @@ h1{font-size:22px;font-weight:500;margin-bottom:4px;}
 <body>
 <div class="wrap">
   <h1>MT Framework ARC Editor</h1>
-  <p class="sub">Browse, extract, and rebuild Capcom MT Framework <code>.arc</code> archives,like <a href="https://github.com/FanTranslatorsInternational/Kuriimu2" target="_blank" rel="noopener">Kuriimu2</a>.</p>
+  <p class="sub">Browse, extract, and rebuild Capcom MT Framework <code>.arc</code> archives, in the style of <a href="https://github.com/FanTranslatorsInternational/Kuriimu2" target="_blank" rel="noopener">Kuriimu2</a>.</p>
 
   <!-- LOAD -->
   <div class="card">
@@ -269,6 +269,15 @@ function determineFileOffset(little, version, isSwitch, fileCount, entryOffset, 
   }
   return entryOffset+entrySize*fileCount;
 }
+// "Extended header" variant seen in some character archives (e.g. chr###_xxx.arc
+// from later Capcom mobile/Switch-era titles): the header carries an extra
+// reserved u32 after entryCount (12-byte header instead of 8), and the entry
+// table is followed by the data section aligned to 16 bytes, with files then
+// packed back-to-back with no further per-file padding.
+function determineFileOffsetExtHeader(entrySize, fileCount, headerSize){
+  const raw = headerSize + entrySize*fileCount;
+  return (raw + 15) & ~15;
+}
 function getRealDecompSize(v,isBE,isSwitch){
   v=v>>>0;
   if(isSwitch) return v;
@@ -301,10 +310,9 @@ function readCName(u8,start,len){
   return new TextDecoder('utf-8',{fatal:false}).decode(slice.slice(0,nul));
 }
 
-function tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,hasExt){
+function tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,hasExt,headerSize,extHeader){
   const entrySize = isSwitch?84:(hasExt?144:80);
   const nameLen = isSwitch?64:(hasExt?128:64);
-  const headerSize=8;
   if(headerSize+entrySize*entryCount>u8.length) return null;
   const entries=[]; let p=headerSize;
   for(let i=0;i<entryCount;i++){
@@ -320,14 +328,18 @@ function tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,hasExt){
     entries.push({name,extensionHash,compSize,decompSizeRaw,offset,unk1,isNew:false});
     p+=entrySize;
   }
-  const dataStart=determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
-  // sanity check: entries' data ranges should fit in the file and start at/after dataStart
+  const dataStart = extHeader
+    ? determineFileOffsetExtHeader(entrySize,entryCount,headerSize)
+    : determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
+  // sanity check: entries' data ranges should fit in the file and start at/after the header
+  let maxEnd=0;
   for(const e of entries){
     if(e.compSize<0 || e.offset<0) return null;
     if(e.offset+e.compSize>u8.length) return null;
-    if(entryCount>0 && e.offset<8) return null;
+    if(entryCount>0 && e.offset<headerSize) return null;
+    maxEnd=Math.max(maxEnd,e.offset+e.compSize);
   }
-  return {entries,entrySize,nameLen,dataStart};
+  return {entries,entrySize,nameLen,dataStart,maxEnd};
 }
 
 function parseArc(buf){
@@ -339,21 +351,37 @@ function parseArc(buf){
   const version=dv.getUint16(4,little);
   const entryCount=dv.getUint16(6,little);
 
-  let hasExt=false, parsed=null;
+  const candidates=[];
   if(!isSwitch){
-    parsed=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,false);
-    if(!parsed){
-      const alt=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,true);
-      if(alt){ parsed=alt; hasExt=true; }
-    }
+    candidates.push({headerSize:8, hasExt:false, extHeader:false});
+    candidates.push({headerSize:8, hasExt:true,  extHeader:false});
+    // Extended-header variant (extra reserved u32 after entryCount), seen in
+    // some character archives — try both name-field widths here too.
+    candidates.push({headerSize:12, hasExt:false, extHeader:true});
+    candidates.push({headerSize:12, hasExt:true,  extHeader:true});
   } else {
-    parsed=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,false);
+    candidates.push({headerSize:8, hasExt:false, extHeader:false});
   }
-  if(!parsed) throw new Error('Could not parse the entry table — file may be corrupt, compressed at the container level, or use an unsupported variant.');
+
+  let best=null, bestCfg=null;
+  for(const cfg of candidates){
+    const parsed=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,cfg.hasExt,cfg.headerSize,cfg.extHeader);
+    if(!parsed) continue;
+    // Prefer an exact fit: the last file's data should end exactly at EOF.
+    const exact = parsed.maxEnd===u8.length;
+    if(!best || (exact && !bestCfg.exact)){
+      best=parsed; bestCfg={...cfg, exact};
+      if(exact) break;
+    }
+  }
+  if(!best) throw new Error('Could not parse the entry table — file may be corrupt, compressed at the container level, or use an unsupported variant.');
+
+  const headerExtra = bestCfg.extHeader ? dv.getUint32(8, little) : 0;
 
   return {
-    platform, isBE, isSwitch, version, entryCount, hasExt,
-    rawBuffer:u8, entries:parsed.entries, dataStart:parsed.dataStart
+    platform, isBE, isSwitch, version, entryCount,
+    hasExt:bestCfg.hasExt, headerSize:bestCfg.headerSize, extHeader:bestCfg.extHeader, headerExtra,
+    rawBuffer:u8, entries:best.entries, dataStart:best.dataStart
   };
 }
 
@@ -451,7 +479,8 @@ async function loadFile(f){
       ['Platform',platformLabel],
       ['Version','0x'+arc.version.toString(16)],
       ['Entries',String(arc.entryCount)],
-      ['Name field','extended'in arc?'':(arc.hasExt?'extended (0x80)':'standard (0x40)')],
+      ['Name field',arc.hasExt?'extended (0x80)':'standard (0x40)'],
+      ['Header style',arc.extHeader?'extended (12-byte)':'classic (8-byte)'],
       ['Data starts at','0x'+arc.dataStart.toString(16)],
       ['File size',formatBytes(f.size)]
     ]);
@@ -467,7 +496,7 @@ async function loadFile(f){
 }
 
 function startNewArchive(){
-  loadedArc={platform:'le',isBE:false,isSwitch:false,version:7,hasExt:false,rawBuffer:new Uint8Array(0),dataStart:8};
+  loadedArc={platform:'le',isBE:false,isSwitch:false,version:7,hasExt:false,headerSize:8,extHeader:false,rawBuffer:new Uint8Array(0),dataStart:8};
   entries=[]; virtualFolders=new Set(); openFolders=new Set();
   sourceFileName='archive.arc';
   document.getElementById('drop-text').textContent='New empty archive';
@@ -668,9 +697,12 @@ function rebuildArc(){
 
   const nameLimit=isSwitch?64:(hasExt?128:64);
   const entrySize=isSwitch?84:(hasExt?144:80);
-  const headerSize=8;
+  const extHeader=!!loadedArc.extHeader;
+  const headerSize=loadedArc.headerSize || 8;
   const entryCount=entries.length;
-  const dataStart=determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
+  const dataStart = extHeader
+    ? determineFileOffsetExtHeader(entrySize,entryCount,headerSize)
+    : determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
 
   let cursor=dataStart;
   const fileBuffers=[];
@@ -696,6 +728,7 @@ function rebuildArc(){
   if(isBE) out.set([0x00,0x43,0x52,0x41],0); else out.set([0x41,0x52,0x43,0x00],0);
   dv.setUint16(4,version,little);
   dv.setUint16(6,entryCount,little);
+  if(extHeader) dv.setUint32(8, loadedArc.headerExtra||0, little);
 
   let p=headerSize;
   for(const e of entries){
