@@ -103,6 +103,15 @@ h1{font-size:22px;font-weight:500;margin-bottom:4px;}
 
 .stats-line{font-size:11px;color:var(--text-tertiary);margin-bottom:8px;}
 .hint{font-size:11.5px;color:var(--text-tertiary);margin-top:8px;line-height:1.5;}
+
+.arc-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+.arc-tab{display:flex;align-items:center;gap:6px;background:var(--bg-secondary);border:0.5px solid var(--border-t);border-radius:var(--r-md);padding:5px 9px;font-size:12px;cursor:pointer;max-width:200px;transition:background .12s,border-color .12s;}
+.arc-tab:hover{border-color:var(--border-s);}
+.arc-tab.active{background:var(--text-primary);color:var(--bg-primary);border-color:transparent;}
+.arc-tab-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.arc-tab-close{flex-shrink:0;opacity:.55;font-size:10px;line-height:1;padding:2px 3px;border-radius:4px;}
+.arc-tab.active .arc-tab-close{opacity:.75;}
+.arc-tab-close:hover{opacity:1 !important;background:rgba(128,128,128,.25);}
 </style>
 </head>
 <body>
@@ -116,11 +125,12 @@ h1{font-size:22px;font-weight:500;margin-bottom:4px;}
       Load archive
       <span class="card-title-right" id="ver-badge"></span>
     </div>
+    <div class="arc-tabs" id="archive-tabs" style="display:none"></div>
     <label class="drop" id="drop-zone">
       <div class="drop-icon"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
-      <span class="drop-label" id="drop-text">Click or drop a .arc file</span>
-      <span class="drop-hint">Plain MT Framework ARC (PC / PS3 / X360 / Switch) or encrypted ARCC (mobile).</span>
-      <input type="file" id="file-input" accept=".arc,*">
+      <span class="drop-label" id="drop-text">Click or drop .arc file(s)</span>
+      <span class="drop-hint">Plain MT Framework ARC (PC / PS3 / X360 / Switch) or encrypted ARCC (mobile). Select or drop several at once — each opens in its own tab above.</span>
+      <input type="file" id="file-input" accept=".arc,*" multiple>
     </label>
     <div class="meta-grid" id="meta-grid" style="display:none"></div>
     <div class="status" id="load-status" style="display:none"><span class="dot"></span><span id="load-status-text"></span></div>
@@ -187,7 +197,7 @@ h1{font-size:22px;font-weight:500;margin-bottom:4px;}
       <button class="btn btn-primary" onclick="rebuildAndDownload()">Rebuild &amp; download</button>
     </div>
     <div class="status" id="save-status" style="display:none"><span class="dot"></span><span id="save-status-text"></span></div>
-    <p class="hint">Rebuilding keeps the original (often compressed) bytes of untouched files as-is, and stores newly added files uncompressed. Empty folders exist only in this editor and are not written to the archive, since the format has no folder entries. When re-encrypting as ARCC, the same key used to load the archive (or the default) is applied.</p>
+    <p class="hint">Rebuilding keeps the original (often compressed) bytes of untouched files as-is, and stores newly added files uncompressed. Empty folders exist only in this editor and are not written to the archive, since the format has no folder entries. When re-encrypting as ARCC, the same key used to load the archive (or the default) is applied. Each open tab is rebuilt and saved independently.</p>
   </div>
 </div>
 
@@ -717,6 +727,13 @@ function buildZip(files){
 
 // ══════════════════════════════════════════════════════════
 // UI STATE
+//
+// Multiple archives can be open at once. `archives` holds one record per
+// open archive/tab; the "live" globals below (loadedArc, entries, etc.)
+// always mirror whichever archive is active, so the rest of the app's
+// functions can keep working on them unchanged. captureActiveState() /
+// applyState() copy the live globals into/out of the active record
+// whenever the active tab changes.
 // ══════════════════════════════════════════════════════════
 let loadedArc=null;      // {platform,isBE,isSwitch,version,hasExt,rawBuffer,dataStart}
 let entries=[];          // flat list of {name, extensionHash, compSize, decompSizeRaw, offset, unk1, isNew, data, ext}
@@ -724,6 +741,10 @@ let virtualFolders=new Set();
 let openFolders=new Set();
 let selectedIndices=new Set();
 let sourceFileName='archive.arc';
+
+let archives=[];         // [{id, sourceFileName, loadedArc, entries, virtualFolders, openFolders, selectedIndices, outName, arccKeyInput, saveArccChecked, destFolder, treeSearch, uiMeta}]
+let activeIdx=-1;
+let archiveIdCounter=1;
 
 function formatBytes(b){ if(b<1024) return b+' B'; if(b<1048576) return (b/1024).toFixed(1)+' KB'; return (b/1048576).toFixed(2)+' MB'; }
 function setStatus(id,msg,cls){ const el=document.getElementById(id); el.className='status '+(cls||''); el.style.display='flex'; el.querySelector('span:last-child').textContent=msg; }
@@ -734,19 +755,124 @@ function readArrayBuffer(f){ return new Promise((res,rej)=>{ const r=new FileRea
 function baseName(n){ return n.replace(/\.[^.]+$/,''); }
 function displayName(e){ return e.name + (e.ext!==undefined?e.ext:resolveExt(e.extensionHash)); }
 
+// ── Multi-archive tab state ─────────────────────────────
+function captureActiveState(){
+  if(activeIdx<0 || !archives[activeIdx]) return;
+  const a=archives[activeIdx];
+  a.loadedArc=loadedArc; a.entries=entries; a.virtualFolders=virtualFolders;
+  a.openFolders=openFolders; a.selectedIndices=selectedIndices; a.sourceFileName=sourceFileName;
+  a.outName=document.getElementById('out-name').value;
+  a.arccKeyInput=document.getElementById('arcc-key').value;
+  a.saveArccChecked=document.getElementById('save-arcc-toggle').checked;
+  a.destFolder=document.getElementById('dest-folder').value;
+  a.treeSearch=document.getElementById('tree-search').value;
+}
+
+function applyState(idx){
+  activeIdx=idx;
+  const a=archives[idx];
+  loadedArc=a.loadedArc; entries=a.entries; virtualFolders=a.virtualFolders;
+  openFolders=a.openFolders; selectedIndices=a.selectedIndices; sourceFileName=a.sourceFileName;
+
+  document.getElementById('drop-text').textContent=a.sourceFileName;
+  document.getElementById('out-name').value=a.outName;
+  document.getElementById('arcc-key').value=a.arccKeyInput;
+  document.getElementById('save-arcc-toggle').checked=a.saveArccChecked;
+  document.getElementById('dest-folder').value=a.destFolder;
+  document.getElementById('tree-search').value=a.treeSearch;
+  document.getElementById('save-arcc-row').style.display=(loadedArc&&loadedArc.isArcc)?'':'none';
+
+  if(a.uiMeta){
+    document.getElementById('ver-badge').textContent=a.uiMeta.badge||'';
+    if(a.uiMeta.metaRows) setMeta(a.uiMeta.metaRows); else document.getElementById('meta-grid').style.display='none';
+    if(a.uiMeta.statusMsg) setStatus('load-status',a.uiMeta.statusMsg,a.uiMeta.statusCls); else document.getElementById('load-status').style.display='none';
+    document.getElementById('arcc-hint').style.display=a.uiMeta.isArccFile?'':'none';
+  }
+  document.getElementById('save-status').style.display='none';
+  document.getElementById('preview-panel').style.display='none';
+
+  renderArchiveTabs();
+  showEditor();
+}
+
+function renderArchiveTabs(){
+  const bar=document.getElementById('archive-tabs');
+  if(!bar) return;
+  if(archives.length===0){ bar.style.display='none'; bar.innerHTML=''; return; }
+  bar.style.display='flex';
+  bar.innerHTML=archives.map((a,i)=>{
+    const label=a.sourceFileName||('Archive '+(i+1));
+    return `<div class="arc-tab ${i===activeIdx?'active':''}" onclick="switchArchiveTab(${i})" title="${escapeHtml(label)}">
+      <span class="arc-tab-name">${escapeHtml(label)}</span>
+      <span class="arc-tab-close" onclick="event.stopPropagation();closeArchiveTab(${i})" title="Close">&#10005;</span>
+    </div>`;
+  }).join('');
+}
+
+function switchArchiveTab(i){
+  if(i===activeIdx) return;
+  captureActiveState();
+  applyState(i);
+}
+
+function closeArchiveTab(i){
+  const wasActive=(i===activeIdx);
+  archives.splice(i,1);
+  if(archives.length===0){ activeIdx=-1; resetToEmpty(); return; }
+  let newIdx;
+  if(wasActive) newIdx=Math.min(i,archives.length-1);
+  else newIdx=(i<activeIdx)?activeIdx-1:activeIdx;
+  applyState(newIdx);
+}
+
+function resetToEmpty(){
+  loadedArc=null; entries=[]; virtualFolders=new Set(); openFolders=new Set(); selectedIndices=new Set(); sourceFileName='archive.arc';
+  document.getElementById('drop-text').textContent='Click or drop .arc file(s)';
+  document.getElementById('ver-badge').textContent='';
+  document.getElementById('meta-grid').style.display='none';
+  document.getElementById('load-status').style.display='none';
+  document.getElementById('arcc-hint').style.display='none';
+  document.getElementById('contents-card').style.display='none';
+  document.getElementById('save-card').style.display='none';
+  document.getElementById('preview-panel').style.display='none';
+  document.getElementById('out-name').value='';
+  document.getElementById('arcc-key').value='';
+  renderArchiveTabs();
+}
+
 // ── Load ─────────────────────────────────────────────
 const dropZone=document.getElementById('drop-zone'), fileInput=document.getElementById('file-input');
 dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover');});
 dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
-dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');const f=e.dataTransfer.files[0];if(f)loadFile(f);});
-fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f)loadFile(f);});
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');const files=[...e.dataTransfer.files];if(files.length)loadFiles(files);});
+fileInput.addEventListener('change',()=>{const files=[...fileInput.files];if(files.length)loadFiles(files);fileInput.value='';});
+
+async function loadFiles(files){
+  for(const f of files){ await loadFile(f); }
+}
 
 async function loadFile(f){
-  sourceFileName=f.name;
+  captureActiveState();
+
+  const record={
+    id:archiveIdCounter++, sourceFileName:f.name, loadedArc:null, entries:[],
+    virtualFolders:new Set(), openFolders:new Set(), selectedIndices:new Set(),
+    outName:f.name, arccKeyInput:document.getElementById('arcc-key').value, saveArccChecked:false,
+    destFolder:'', treeSearch:'', uiMeta:null
+  };
+  archives.push(record);
+  activeIdx=archives.length-1;
+
+  loadedArc=null; entries=[]; virtualFolders=record.virtualFolders; openFolders=record.openFolders;
+  selectedIndices=record.selectedIndices; sourceFileName=f.name;
+
   document.getElementById('drop-text').textContent=f.name;
   document.getElementById('ver-badge').textContent='';
   document.getElementById('meta-grid').style.display='none';
   document.getElementById('arcc-hint').style.display='none';
+  document.getElementById('arcc-key').value=record.arccKeyInput;
+  renderArchiveTabs();
+
   try{
     const buf=await readArrayBuffer(f);
     const u8peek=new Uint8Array(buf);
@@ -754,9 +880,9 @@ async function loadFile(f){
     if(isArccFile) document.getElementById('arcc-hint').style.display='';
     const keyBytes = isArccFile ? parseKeyInput(document.getElementById('arcc-key').value) : null;
     const arc=parseArc(buf, keyBytes);
-    loadedArc=arc;
+    loadedArc=arc; record.loadedArc=arc;
     entries=arc.entries.map(e=>({...e, ext:resolveExt(e.extensionHash)}));
-    virtualFolders=new Set(); openFolders=new Set(); selectedIndices=new Set();
+    record.entries=entries;
     const platformLabel={le:'PC / little-endian',be:'PS3 / Xbox 360 / big-endian',switch:'Nintendo Switch',arcc:'Mobile (ARCC, Blowfish-encrypted)'}[arc.platform];
     document.getElementById('ver-badge').textContent=platformLabel;
     const metaRows=[
@@ -773,30 +899,49 @@ async function loadFile(f){
     metaRows.push(['Data starts at','0x'+arc.dataStart.toString(16)]);
     metaRows.push(['File size',formatBytes(f.size)]);
     setMeta(metaRows);
-    setStatus('load-status',`Loaded ${f.name} · ${arc.entryCount} entries · ${formatBytes(f.size)}${arc.isArcc?' · decrypted':''}`,'ok');
-    document.getElementById('out-name').value=f.name;
+    const statusMsg=`Loaded ${f.name} · ${arc.entryCount} entries · ${formatBytes(f.size)}${arc.isArcc?' · decrypted':''}`;
+    setStatus('load-status',statusMsg,'ok');
+    document.getElementById('out-name').value=f.name; record.outName=f.name;
     document.getElementById('save-arcc-row').style.display = arc.isArcc ? '' : 'none';
-    document.getElementById('save-arcc-toggle').checked = !!arc.isArcc;
+    document.getElementById('save-arcc-toggle').checked = !!arc.isArcc; record.saveArccChecked=!!arc.isArcc;
+    record.uiMeta={badge:platformLabel, metaRows, statusMsg, statusCls:'ok', isArccFile};
     showEditor();
   }catch(err){
-    loadedArc=null; entries=[];
     setStatus('load-status','Error: '+err.message,'err');
     document.getElementById('contents-card').style.display='none';
     document.getElementById('save-card').style.display='none';
+    // Drop the failed tab and fall back to whichever archive was active before.
+    archives.pop();
+    if(archives.length){ applyState(archives.length-1); }
+    else { activeIdx=-1; loadedArc=null; entries=[]; renderArchiveTabs(); }
   }
 }
 
 function startNewArchive(){
-  loadedArc={platform:'le',isBE:false,isSwitch:false,version:7,hasExt:false,headerSize:8,extHeader:false,isArcc:false,arccKey:null,rawBuffer:new Uint8Array(0),dataStart:8};
-  entries=[]; virtualFolders=new Set(); openFolders=new Set(); selectedIndices=new Set();
-  sourceFileName='archive.arc';
+  captureActiveState();
+  const newLoadedArc={platform:'le',isBE:false,isSwitch:false,version:7,hasExt:false,headerSize:8,extHeader:false,isArcc:false,arccKey:null,rawBuffer:new Uint8Array(0),dataStart:8};
+  const statusMsg='Started a new empty archive (version 7, little-endian). Add files below.';
+  const record={
+    id:archiveIdCounter++, sourceFileName:'archive.arc', loadedArc:newLoadedArc, entries:[],
+    virtualFolders:new Set(), openFolders:new Set(), selectedIndices:new Set(),
+    outName:'archive.arc', arccKeyInput:'', saveArccChecked:false, destFolder:'', treeSearch:'',
+    uiMeta:{badge:'PC / little-endian (new)', metaRows:null, statusMsg, statusCls:'ok', isArccFile:false}
+  };
+  archives.push(record);
+  activeIdx=archives.length-1;
+
+  loadedArc=newLoadedArc; entries=[]; virtualFolders=record.virtualFolders; openFolders=record.openFolders;
+  selectedIndices=record.selectedIndices; sourceFileName='archive.arc';
+
   document.getElementById('drop-text').textContent='New empty archive';
   document.getElementById('ver-badge').textContent='PC / little-endian (new)';
   document.getElementById('meta-grid').style.display='none';
   document.getElementById('arcc-hint').style.display='none';
-  setStatus('load-status','Started a new empty archive (version 7, little-endian). Add files below.','ok');
+  setStatus('load-status',statusMsg,'ok');
   document.getElementById('out-name').value='archive.arc';
   document.getElementById('save-arcc-row').style.display='none';
+  document.getElementById('arcc-key').value='';
+  renderArchiveTabs();
   showEditor();
 }
 
