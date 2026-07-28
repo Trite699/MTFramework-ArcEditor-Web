@@ -125,7 +125,10 @@ h1{font-size:22px;font-weight:500;margin-bottom:4px;}
       Load archive
       <span class="card-title-right" id="ver-badge"></span>
     </div>
-    <div class="arc-tabs" id="archive-tabs" style="display:none"></div>
+    <div class="arc-tabs-row" id="archive-tabs-row" style="display:none;align-items:center;gap:8px;margin-bottom:10px;">
+      <div class="arc-tabs" id="archive-tabs" style="margin-bottom:0;flex:1;"></div>
+      <button class="btn btn-sm" id="btn-download-all-tabs" onclick="downloadAllTabsZip()" title="Rebuild every open archive and download them together as one .zip">Download all tabs (.zip)</button>
+    </div>
     <label class="drop" id="drop-zone">
       <div class="drop-icon"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
       <span class="drop-label" id="drop-text">Click or drop .arc file(s)</span>
@@ -568,7 +571,11 @@ function detectPlatform(u8){
 function readCName(u8,start,len){
   const slice=u8.slice(start,start+len);
   let nul=slice.indexOf(0); if(nul<0) nul=slice.length;
-  for(let k=nul;k<slice.length;k++) if(slice[k]!==0) return null; // padding must be all zero
+  // Note: we intentionally do NOT require the bytes after the terminator to be
+  // zero. Real archives (including ARCC's decrypted entry tables) aren't
+  // guaranteed to zero-fill that trailing padding — it can be leftover bytes
+  // from whatever buffer the original tool reused — so treating that as a
+  // parse failure would reject perfectly valid, correctly-decrypted archives.
   for(let k=0;k<nul;k++){ const c=slice[k]; if(c<0x20 && c!==0x09) return null; }
   return new TextDecoder('utf-8',{fatal:false}).decode(slice.slice(0,nul));
 }
@@ -797,8 +804,10 @@ function applyState(idx){
 
 function renderArchiveTabs(){
   const bar=document.getElementById('archive-tabs');
+  const row=document.getElementById('archive-tabs-row');
   if(!bar) return;
-  if(archives.length===0){ bar.style.display='none'; bar.innerHTML=''; return; }
+  if(archives.length===0){ if(row) row.style.display='none'; bar.innerHTML=''; return; }
+  if(row) row.style.display='flex';
   bar.style.display='flex';
   bar.innerHTML=archives.map((a,i)=>{
     const label=a.sourceFileName||('Archive '+(i+1));
@@ -1283,6 +1292,64 @@ function rebuildArcc(key){
     out.set(fileEnc, start);
   }
   return out;
+}
+
+async function downloadAllTabsZip(){
+  if(archives.length===0) return;
+  const btn=document.getElementById('btn-download-all-tabs');
+  const origLabel=btn?btn.textContent:null;
+  if(btn){ btn.disabled=true; btn.textContent='Rebuilding…'; }
+
+  // Persist whatever is currently on-screen back into its tab record first,
+  // so the active tab's own in-progress edits are included too.
+  captureActiveState();
+  const originalActiveIdx=activeIdx;
+
+  const files=[];
+  const errors=[];
+  const usedNames={};
+
+  for(let i=0;i<archives.length;i++){
+    const rec=archives[i];
+    // Temporarily point the shared globals at this tab's data so the existing
+    // single-archive rebuildArc()/rebuildArcc() functions can be reused as-is.
+    loadedArc=rec.loadedArc;
+    entries=rec.entries;
+    try{
+      const wantArcc = !!(loadedArc && loadedArc.isArcc!==undefined && rec.saveArccChecked);
+      let out;
+      if(wantArcc){
+        const key=parseKeyInput(rec.arccKeyInput);
+        out=rebuildArcc(key);
+      } else {
+        out=rebuildArc();
+      }
+      let name=(rec.outName&&rec.outName.trim())||(wantArcc?'archive.arcc':'archive.arc');
+      if(usedNames[name]!==undefined){
+        usedNames[name]++;
+        const dot=name.lastIndexOf('.');
+        name = dot>0 ? name.slice(0,dot)+'_'+usedNames[name]+name.slice(dot) : name+'_'+usedNames[name];
+      } else usedNames[name]=0;
+      files.push({name, data:out});
+    }catch(err){
+      errors.push((rec.sourceFileName||('Archive '+(i+1)))+': '+err.message);
+    }
+  }
+
+  // Restore whichever tab was active/on-screen before we started.
+  applyState(originalActiveIdx);
+
+  if(btn){ btn.disabled=archives.length===0; btn.textContent=origLabel; }
+
+  if(files.length===0){
+    alert('Could not rebuild any open archives.\n'+errors.join('\n'));
+    return;
+  }
+  const zip=buildZip(files);
+  dlBlob(new Blob([zip],{type:'application/zip'}), 'all_archives.zip');
+  if(errors.length){
+    alert(`${files.length} archive(s) were rebuilt and downloaded, but ${errors.length} failed:\n`+errors.join('\n'));
+  }
 }
 
 function rebuildAndDownload(){
