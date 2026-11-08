@@ -200,7 +200,7 @@ h1{font-size:22px;font-weight:500;margin-bottom:4px;}
       <button class="btn btn-primary" onclick="rebuildAndDownload()">Rebuild &amp; download</button>
     </div>
     <div class="status" id="save-status" style="display:none"><span class="dot"></span><span id="save-status-text"></span></div>
-    <p class="hint">Rebuilding keeps the original (often compressed) bytes of untouched files as-is, and stores newly added files uncompressed. Empty folders exist only in this editor and are not written to the archive, since the format has no folder entries. When re-encrypting as ARCC, the same key used to load the archive (or the default) is applied. Each open tab is rebuilt and saved independently.</p>
+    <p class="hint">Rebuilding keeps the original (often compressed) bytes of untouched files as-is, and stores newly added files uncompressed (Switch archives: zlib-compressed, as the game requires). Paths are written with backslashes and new files reuse this archive's own extension hashes. Empty folders exist only in this editor and are not written to the archive, since the format has no folder entries. When re-encrypting as ARCC, the same key used to load the archive (or the default) is applied. Each open tab is rebuilt and saved independently.</p>
   </div>
 </div>
 
@@ -519,6 +519,8 @@ Object.entries(RAW_EXT_MAP).forEach(([k,v])=>{EXT_MAP[Number(k)>>>0]=v;});
 const EXT_TO_HASH={};
 Object.entries(EXT_MAP).forEach(([hash,ext])=>{ if(!(ext in EXT_TO_HASH)) EXT_TO_HASH[ext]=Number(hash)>>>0; });
 
+// The engine stores relative, backslash-separated names (Kuriimu2: FileName setter does Replace('/','\\')).
+function normArcPath(n){ return String(n).replace(/\//g,'\\').replace(/^\\+/,''); }
 function resolveExt(hash){ hash=hash>>>0; return EXT_MAP[hash] || ('.'+hash.toString(16).toUpperCase().padStart(8,'0')); }
 
 // ══════════════════════════════════════════════════════════
@@ -538,15 +540,6 @@ function determineFileOffset(little, version, isSwitch, fileCount, entryOffset, 
   }
   return entryOffset+entrySize*fileCount;
 }
-// "Extended header" variant seen in some character archives (e.g. chr###_xxx.arc
-// from later Capcom mobile/Switch-era titles): the header carries an extra
-// reserved u32 after entryCount (12-byte header instead of 8), and the entry
-// table is followed by the data section aligned to 16 bytes, with files then
-// packed back-to-back with no further per-file padding.
-function determineFileOffsetExtHeader(entrySize, fileCount, headerSize){
-  const raw = headerSize + entrySize*fileCount;
-  return (raw + 15) & ~15;
-}
 function getRealDecompSize(v,isBE,isSwitch){
   v=v>>>0;
   if(isSwitch) return v;
@@ -565,7 +558,11 @@ function detectPlatform(u8){
   if(u8[0]===0x41&&u8[1]===0x52&&u8[2]===0x43&&u8[3]===0x43) return 'arcc';
   const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);
   const verLE=dv.getUint16(4,true);
-  if(verLE===9) return 'switch';
+  if(verLE===9 && u8[0]===0x41&&u8[1]===0x52&&u8[2]===0x43&&u8[3]===0x00){
+    // Version 9 is Switch-only, but confirm using the first entry's data offset (as Kuriimu2 does).
+    const cnt=dv.getUint16(6,true);
+    if(u8.length>=0x5C && dv.getInt32(0x58,true)===determineFileOffset(true,9,true,cnt,8,false)) return 'switch';
+  }
   if(u8[0]===0x00&&u8[1]===0x43&&u8[2]===0x52&&u8[3]===0x41) return 'be';
   if(u8[0]===0x41&&u8[1]===0x52&&u8[2]===0x43&&u8[3]===0x00) return 'le';
   throw new Error('Unrecognized magic bytes — this does not look like a plain MT Framework ARC.');
@@ -600,9 +597,7 @@ function tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,hasExt,he
     entries.push({name,extensionHash,compSize,decompSizeRaw,offset,unk1,isNew:false});
     p+=entrySize;
   }
-  const dataStart = extHeader
-    ? determineFileOffsetExtHeader(entrySize,entryCount,headerSize)
-    : determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
+  const dataStart = determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
   // sanity check: entries' data ranges should fit in the file and start at/after the header
   let maxEnd=0;
   for(const e of entries){
@@ -616,7 +611,9 @@ function tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,hasExt,he
 
 function parseArc(buf, customKeyBytes){
   const u8=new Uint8Array(buf);
-  const platform=detectPlatform(u8);
+  return parseArcAs(u8, detectPlatform(u8), customKeyBytes);
+}
+function parseArcAs(u8, platform, customKeyBytes){
 
   if(platform==='arcc'){
     const dv0=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);
@@ -647,20 +644,33 @@ function parseArc(buf, customKeyBytes){
   const entryCount=dv.getUint16(6,little);
 
   const candidates=[];
-  if(!isSwitch){
-    candidates.push({headerSize:8, hasExt:false, extHeader:false});
-    candidates.push({headerSize:8, hasExt:true,  extHeader:false});
-    // Extended-header variant (extra reserved u32 after entryCount), seen in
-    // some character archives — try both name-field widths here too.
-    candidates.push({headerSize:12, hasExt:false, extHeader:true});
-    candidates.push({headerSize:12, hasExt:true,  extHeader:true});
+  const addCand=(headerSize,hasExt)=>{
+    if(!candidates.some(c=>c.headerSize===headerSize&&c.hasExt===hasExt))
+      candidates.push({headerSize,hasExt,extHeader:headerSize===12});
+  };
+  if(isSwitch){
+    addCand(8,false);
   } else {
-    candidates.push({headerSize:8, hasExt:false, extHeader:false});
+    // Real layout (Kuriimu2 MtArc): little-endian archives other than version 7/8
+    // carry one extra u32 after the 8-byte header, so their entry table starts at
+    // 0x0C. Big-endian archives always use an 8-byte header.
+    const hs = (little && version!==7 && version!==8) ? 12 : 8;
+    // Extended (0x80) name field heuristic: probe the first entry as a normal
+    // 0x50 entry; if its hash/size/offset look empty it's really the wide form.
+    let extGuess=false;
+    if(little && hs+0x50<=u8.length){
+      const o=hs+0x40;
+      extGuess = dv.getUint32(o,true)===0 || dv.getInt32(o+8,true)===0 || dv.getInt32(o+12,true)===0;
+    }
+    addCand(hs,extGuess);
+    addCand(hs,!extGuess);
+    // Legacy fallbacks for oddball archives
+    addCand(8,false); addCand(8,true); addCand(12,false); addCand(12,true);
   }
 
   let best=null, bestCfg=null;
   for(const cfg of candidates){
-    const parsed=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,cfg.hasExt,cfg.headerSize,cfg.extHeader);
+    const parsed=tryParseEntries(u8,dv,little,isBE,isSwitch,version,entryCount,cfg.hasExt,cfg.headerSize,false);
     if(!parsed) continue;
     // Prefer an exact fit: the last file's data should end exactly at EOF.
     const exact = parsed.maxEnd===u8.length;
@@ -669,7 +679,10 @@ function parseArc(buf, customKeyBytes){
       if(exact) break;
     }
   }
-  if(!best) throw new Error('Could not parse the entry table — file may be corrupt, compressed at the container level, or use an unsupported variant.');
+  if(!best){
+    if(platform==='le' && version===9) return parseArcAs(u8,'switch'); // v9 not recognised as Switch above
+    throw new Error('Could not parse the entry table — file may be corrupt, compressed at the container level, or use an unsupported variant.');
+  }
 
   const headerExtra = bestCfg.extHeader ? dv.getUint32(8, little) : 0;
 
@@ -686,7 +699,8 @@ async function extractEntryData(entry){
   let raw=loadedArc.rawBuffer.slice(entry.offset, entry.offset+entry.compSize);
   if(loadedArc.isArcc) raw = mtBlowfishCrypt(raw, loadedArc.arccKey);
   const realSize=getRealDecompSize(entry.decompSizeRaw, loadedArc.isBE, loadedArc.isSwitch);
-  if(realSize===entry.compSize || typeof pako==='undefined') return raw;
+  if(!loadedArc.isSwitch && realSize===entry.compSize) return raw; // Switch files are always zlib, even when sizes match
+  if(typeof pako==='undefined') return raw;
   try{ return pako.inflate(raw); }
   catch(e1){
     try{ return pako.inflateRaw(raw); }
@@ -905,7 +919,7 @@ async function loadFile(f){
       metaRows.push(['Encryption','Blowfish (OFB-style), key '+(document.getElementById('arcc-key').value.trim()?'custom':'default')]);
     } else {
       metaRows.push(['Name field',arc.hasExt?'extended (0x80)':'standard (0x40)']);
-      metaRows.push(['Header style',arc.extHeader?'extended (12-byte)':'classic (8-byte)']);
+      metaRows.push(['Header style',arc.headerSize===12?'12-byte (extra u32 after header)':'8-byte']);
     }
     metaRows.push(['Data starts at','0x'+arc.dataStart.toString(16)]);
     metaRows.push(['File size',formatBytes(f.size)]);
@@ -1143,13 +1157,25 @@ document.getElementById('add-files-input').addEventListener('change', async e=>{
     const dot=f.name.lastIndexOf('.');
     const ext=dot>=0?f.name.slice(dot).toLowerCase():'';
     const base=dot>=0?f.name.slice(0,dot):f.name;
-    let hash=EXT_TO_HASH[ext];
+    // Pick the extension hash: (1) 8-hex "unknown" extension -> use it verbatim,
+    // (2) the hash this archive already uses for that extension (hashes differ per game),
+    // (3) the built-in table, (4) ask.
+    let hash;
+    if(/^\.[0-9a-f]{8}$/i.test(ext)) hash=parseInt(ext.slice(1),16)>>>0;
+    if(hash===undefined){
+      const used=entries.find(x=>!x.isNew && (x.ext||resolveExt(x.extensionHash)).toLowerCase()===ext && ext);
+      if(used) hash=used.extensionHash>>>0;
+    }
+    if(hash===undefined) hash=EXT_TO_HASH[ext];
     if(hash===undefined){
       const manual=window.prompt(`Unknown extension "${ext}". Enter the extension hash as hex (advanced), or leave blank for 0x00000000:`,'');
       hash = manual ? (parseInt(manual.replace(/^0x/i,''),16)>>>0) : 0;
     }
-    const path=dest?dest+'/'+base:base;
-    entries.push({name:path, extensionHash:hash>>>0, ext, compSize:data.length, decompSizeRaw:data.length, offset:0, unk1:0, isNew:true, data});
+    const path=normArcPath(dest?dest+'/'+base:base);
+    // Replace an existing entry with the same path + type instead of adding a duplicate.
+    const dupIdx=entries.findIndex(x=>normArcPath(x.name).toLowerCase()===path.toLowerCase() && (x.extensionHash>>>0)===(hash>>>0));
+    const ne={name:path, extensionHash:hash>>>0, ext, compSize:data.length, decompSizeRaw:data.length, offset:0, unk1:0, isNew:true, data};
+    if(dupIdx>=0){ ne.unk1=entries[dupIdx].unk1||0; entries[dupIdx]=ne; } else entries.push(ne);
   }
   e.target.value='';
   renderTree();
@@ -1209,6 +1235,8 @@ function rebuildArc(){
   const isBE=loadedArc.isBE, isSwitch=loadedArc.isSwitch, little=!isBE, version=loadedArc.version;
   let hasExt=loadedArc.hasExt;
   const enc=new TextEncoder();
+  // The engine stores relative, backslash-separated names (Kuriimu2 does Replace('/','\\')).
+  for(const e of entries) e.name=normArcPath(e.name);
 
   if(!isSwitch){
     const maxLen=Math.max(0,...entries.map(e=>enc.encode(e.name).length));
@@ -1226,9 +1254,7 @@ function rebuildArc(){
   const extHeader=!!loadedArc.extHeader;
   const headerSize=loadedArc.headerSize || 8;
   const entryCount=entries.length;
-  const dataStart = extHeader
-    ? determineFileOffsetExtHeader(entrySize,entryCount,headerSize)
-    : determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
+  const dataStart = determineFileOffset(little,version,isSwitch,entryCount,headerSize,hasExt);
 
   let cursor=dataStart;
   const fileBuffers=[];
@@ -1236,8 +1262,14 @@ function rebuildArc(){
     let dataBytes, finalDecomp;
     if(e.isNew){
       dataBytes=e.data;
-      e.compSize=dataBytes.length;
       finalDecomp=setDecompSize(0,dataBytes.length,isBE,isSwitch);
+      if(isSwitch){
+        // Every file in a Switch ARC is zlib-compressed (even when sizes would match),
+        // so new/replaced files must be deflated or the game can't read them.
+        if(typeof pako==='undefined') throw new Error('The compression library (pako) did not load — it is required to add files to a Switch archive.');
+        dataBytes=pako.deflate(dataBytes);
+      }
+      e.compSize=dataBytes.length;
     } else {
       dataBytes=loadedArc.rawBuffer.slice(e.offset,e.offset+e.compSize);
       if(loadedArc.isArcc) dataBytes=mtBlowfishCrypt(dataBytes, loadedArc.arccKey);
