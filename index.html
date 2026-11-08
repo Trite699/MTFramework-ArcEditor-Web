@@ -1037,6 +1037,7 @@ function renderNode(node,depth){
         ${isCompressed?'<span class="badge comp">compressed</span>':''}
         <span class="file-meta">${formatBytes(e.isNew?e.data.length:e.compSize)}</span>
         <span class="file-actions">
+          <button class="icon-btn" title="Replace file data (keeps position, name, hash and flags)" onclick="replaceEntryPick(${child.idx})">&#8635;</button>
           <button class="icon-btn" title="Download" onclick="downloadEntry(${child.idx})">&#8681;</button>
           <button class="icon-btn danger" title="Remove" onclick="removeEntry(${child.idx})">&#10005;</button>
         </span>
@@ -1172,10 +1173,17 @@ document.getElementById('add-files-input').addEventListener('change', async e=>{
       hash = manual ? (parseInt(manual.replace(/^0x/i,''),16)>>>0) : 0;
     }
     const path=normArcPath(dest?dest+'/'+base:base);
-    // Replace an existing entry with the same path + type instead of adding a duplicate.
-    const dupIdx=entries.findIndex(x=>normArcPath(x.name).toLowerCase()===path.toLowerCase() && (x.extensionHash>>>0)===(hash>>>0));
-    const ne={name:path, extensionHash:hash>>>0, ext, compSize:data.length, decompSizeRaw:data.length, offset:0, unk1:0, isNew:true, data};
-    if(dupIdx>=0){ ne.unk1=entries[dupIdx].unk1||0; entries[dupIdx]=ne; } else entries.push(ne);
+    const same=x=>normArcPath(x.name).toLowerCase()===path.toLowerCase() && (x.extensionHash>>>0)===(hash>>>0);
+    const dupIdx=entries.findIndex(same);
+    const remIdx=(loadedArc&&loadedArc.removed)?loadedArc.removed.findIndex(r=>same(r.entry)):-1;
+    if(dupIdx>=0){                       // same file already present: replace in place
+      entries[dupIdx]=makeReplacement(entries[dupIdx],data);
+    } else if(remIdx>=0){                // removed earlier: put it back in its original slot
+      const r=loadedArc.removed.splice(remIdx,1)[0];
+      entries.splice(Math.min(r.idx,entries.length),0,makeReplacement(r.entry,data));
+    } else {
+      entries.push({name:path, extensionHash:hash>>>0, ext, compSize:data.length, decompSizeRaw:data.length, offset:0, unk1:0, isNew:true, data, flagSrc:0, recompress:false});
+    }
   }
   e.target.value='';
   renderTree();
@@ -1192,7 +1200,19 @@ function addFolder(){
   renderTree();
 }
 
+function replaceEntryPick(idx){
+  const inp=document.createElement('input'); inp.type='file';
+  inp.onchange=async()=>{
+    const f=inp.files[0]; if(!f||!entries[idx]) return;
+    const data=new Uint8Array(await readArrayBuffer(f));
+    entries[idx]=makeReplacement(entries[idx],data);
+    renderTree();
+  };
+  inp.click();
+}
+
 function removeEntry(idx){
+  if(entries[idx] && loadedArc) (loadedArc.removed=loadedArc.removed||[]).push({idx,entry:entries[idx]});
   entries[idx]=null;
   entries=entries.filter(Boolean);
   renderTree();
@@ -1229,8 +1249,24 @@ async function downloadAllZip(){
   }
 }
 
+// ── Replace helpers ──────────────────────────────────
+// Was this entry's payload stored zlib-compressed? (Switch: always.)
+function entryWasCompressed(e){
+  if(e.isNew) return !!e.recompress;
+  if(loadedArc && loadedArc.isSwitch) return true;
+  return getRealDecompSize(e.decompSizeRaw, loadedArc.isBE, loadedArc.isSwitch) !== e.compSize;
+}
+// Build the replacement for `old`: same name/hash/unk, same size-flag bits and the
+// same storage mode (compressed vs raw), so the game sees an entry shaped like the original.
+function makeReplacement(old, data){
+  return {name:old.name, extensionHash:old.extensionHash>>>0, ext:old.ext, compSize:data.length,
+          decompSizeRaw:data.length, offset:0, unk1:old.unk1||0, isNew:true, data,
+          flagSrc: old.isNew ? (old.flagSrc||0) : (old.decompSizeRaw>>>0),
+          recompress: entryWasCompressed(old)};
+}
+
 // ── Rebuild & save ───────────────────────────────────
-function rebuildArc(){
+function rebuildArc(forArcc){
   if(!loadedArc) throw new Error('No archive loaded.');
   const isBE=loadedArc.isBE, isSwitch=loadedArc.isSwitch, little=!isBE, version=loadedArc.version;
   let hasExt=loadedArc.hasExt;
@@ -1262,12 +1298,22 @@ function rebuildArc(){
     let dataBytes, finalDecomp;
     if(e.isNew){
       dataBytes=e.data;
-      finalDecomp=setDecompSize(0,dataBytes.length,isBE,isSwitch);
-      if(isSwitch){
-        // Every file in a Switch ARC is zlib-compressed (even when sizes would match),
-        // so new/replaced files must be deflated or the game can't read them.
-        if(typeof pako==='undefined') throw new Error('The compression library (pako) did not load — it is required to add files to a Switch archive.');
-        dataBytes=pako.deflate(dataBytes);
+      // keep the original entry's flag bits (high size bits) when this replaces a file
+      finalDecomp=setDecompSize(e.flagSrc||0,dataBytes.length,isBE,isSwitch);
+      // ARCC encrypts in whole 8-byte Blowfish blocks, so a payload whose size isn't a
+      // multiple of 8 would leave a partial block the game may try to decrypt. Edited
+      // files are therefore stored zlib-compressed and zero-padded to a block multiple.
+      const needZ = isSwitch || e.recompress || (forArcc && dataBytes.length%8!==0);
+      if(needZ){
+        if(typeof pako==='undefined') throw new Error('The compression library (pako) did not load — it is required to store this file compressed.');
+        const z=pako.deflate(dataBytes);
+        if(forArcc){
+          let len=(z.length+7)&~7;
+          if(len===dataBytes.length) len+=8;           // equal sizes would read as "stored raw"
+          const padded=new Uint8Array(len); padded.set(z); dataBytes=padded; // zlib ignores trailing bytes
+        } else if(isSwitch || z.length!==dataBytes.length){
+          dataBytes=z; // equal sizes would read as "stored raw", so only use zlib when it differs (never for Switch)
+        }
       }
       e.compSize=dataBytes.length;
     } else {
@@ -1310,7 +1356,7 @@ function rebuildArcc(key){
   const maxLen=Math.max(0,...entries.map(e=>enc.encode(e.name).length));
   if(maxLen>63) throw new Error(`A file path is too long (${maxLen} bytes) for ARCC's fixed-width name field (max 63 bytes). Shorten the path, or save as a plain .arc instead.`);
 
-  const plain=rebuildArc(); // always produces a decrypted, valid plain-arc buffer
+  const plain=rebuildArc(true); // always produces a decrypted, valid plain-arc buffer
   const out=new Uint8Array(plain);
   out[0]=0x41; out[1]=0x52; out[2]=0x43; out[3]=0x43; // 'ARCC'
 
