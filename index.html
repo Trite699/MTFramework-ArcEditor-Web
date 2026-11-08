@@ -382,6 +382,11 @@ class Blowfish{
     [l,r]=[r,l]; r=(r^this.P[16])>>>0; l=(l^this.P[17])>>>0;
     return [l>>>0, r>>>0];
   }
+  decryptBlock(l,r){
+    for(let i=17;i>1;i--){ l=(l^this.P[i])>>>0; r=(r^this.F(l))>>>0; [l,r]=[r,l]; }
+    [l,r]=[r,l]; r=(r^this.P[1])>>>0; l=(l^this.P[0])>>>0;
+    return [l>>>0, r>>>0];
+  }
 }
 
 // Capcom's MT Framework Mobile "ARCC" container wraps its contents in a
@@ -397,20 +402,17 @@ class Blowfish{
 // are the same operation. A fresh cipher state is used per region
 // (the entry table gets one, then each file's data gets its own),
 // matching how Kuriimu2 opens a new stream instance per file.
-function mtBlowfishCrypt(buf, key){
+function mtBlowfishCrypt(buf, key, encrypt){
+  // FIXED: real ARCC is Blowfish in ECB mode with little-endian 32-bit words
+  // (not an OFB keystream). A trailing partial block (<8 bytes) is left untouched.
   const bf = new Blowfish(key);
-  let l = 0, r = 0;
-  const out = new Uint8Array(buf.length);
-  let off = 0;
-  const kbuf = new Uint8Array(8);
-  const kdv = new DataView(kbuf.buffer);
-  while(off < buf.length){
-    [l, r] = bf.encryptBlock(l, r);
-    kdv.setUint32(0, l, true);
-    kdv.setUint32(4, r, true);
-    const n = Math.min(8, buf.length - off);
-    for(let i=0;i<n;i++) out[off+i] = buf[off+i] ^ kbuf[i];
-    off += 8;
+  const out = new Uint8Array(buf);            // copy
+  const dv = new DataView(out.buffer);
+  const full = buf.length - (buf.length % 8);
+  for(let off=0; off<full; off+=8){
+    let l = dv.getUint32(off, true), r = dv.getUint32(off+4, true);
+    [l, r] = encrypt ? bf.encryptBlock(l, r) : bf.decryptBlock(l, r);
+    dv.setUint32(off, l, true); dv.setUint32(off+4, r, true);
   }
   return out;
 }
@@ -1282,13 +1284,13 @@ function rebuildArcc(key){
 
   const entryCount=entries.length, headerSize=8, entrySize=80;
   const entriesLen=entryCount*entrySize;
-  const entriesEnc=mtBlowfishCrypt(out.slice(headerSize, headerSize+entriesLen), key);
+  const entriesEnc=mtBlowfishCrypt(out.slice(headerSize, headerSize+entriesLen), key, true);
   out.set(entriesEnc, headerSize);
 
   for(const e of entries){
     const start=e._finalOffset, len=e.compSize;
     if(len===0) continue;
-    const fileEnc=mtBlowfishCrypt(out.slice(start, start+len), key);
+    const fileEnc=mtBlowfishCrypt(out.slice(start, start+len), key, true);
     out.set(fileEnc, start);
   }
   return out;
